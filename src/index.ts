@@ -237,9 +237,6 @@ export function apply(ctx: Context, config: Config) {
             await session.send(h('img', { src: coverUrl }))
           }
         } else {
-          if (logDetail) log('info', `开始下载视频, 时长: ${duration}秒`)
-
-
           const videoUrl = aweme?.video?.download_addr?.url_list?.[0]
             || aweme?.video?.play_addr?.url_list?.[0];
 
@@ -248,13 +245,12 @@ export function apply(ctx: Context, config: Config) {
             return '无法获取视频链接，请稍后重试';
           }
 
-          const videoBuffer = await ctx.http.get<ArrayBuffer>(videoUrl, {
-            responseType: 'arraybuffer',
-          });
+          if (logDetail) log('info', `准备发送视频直链, 时长: ${duration}秒`)
 
-          if (logInfo) log('success', `视频下载完成, 大小: ${(videoBuffer.byteLength / 1024 / 1024).toFixed(2)}MB`)
+          await session.send('视频地址：' + videoUrl)
+          await session.send(h.video(videoUrl, 'video/mp4'))
 
-          session.send(h.video(videoBuffer, 'video/mp4'))
+          if (logInfo) log('success', `已发送视频直链`)
         }
       }
     } catch(err) {
