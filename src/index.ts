@@ -56,7 +56,7 @@ export interface Config {
 }
 
 export const Config = Schema.object({
-  apiHost: Schema.string().default('http://192.168.2.167:16252').description('填写你的API前缀，不要有斜杠最后'),
+  apiHost: Schema.string().default('https://api.douyin.wtf').description('填写你的API前缀，不要有斜杠最后'),
   maxDuration: Schema.string().default('90').description('允许下载的最大视频长度(秒)，否则仅发送预览图，避免bot卡住'),
   replyTemplate: Schema.string().default('抖音解析：\n{desc}').description('自定义回复模板，可用变量：{desc}, {nickname}, {type}, {digg_count}, {comment_count}, {share_count}, {collect_count}, {duration}, {signature}').role('textarea'),
   longVideoTemplate: Schema.string().default('视频过长~ 请打开抖音客户端查看').description('视频过长时的提示文本').role('textarea'),
@@ -80,8 +80,52 @@ export function apply(ctx: Context, config: Config) {
 
   async function getVideoDetailMinimal(url: string) {
     if (logDetail) log('info', `正在获取抖音链接信息: ${url}`)
-    return await ctx.http.get(config.apiHost + '/api/hybrid/video_data?url=' + url + '&minimal=true');
+    return await ctx.http.get(config.apiHost + '/api/hybrid/video_data', {
+      params: {
+        url,
+        minimal: true
+      }
+    });
   };
+
+  function normalizeResponse(response: any) {
+    const topCode = response?.code ?? response?.status ?? response?.status_code;
+    const topData = response?.data ?? {};
+    const payload = topData?.data ?? topData;
+    const aweme = payload?.aweme_detail || payload?.aweme || payload?.aweme_list?.[0] || payload;
+
+    return { code: topCode ?? 200, aweme, payload };
+  }
+
+  function collectImages(imageData: any): string[] {
+    if (!imageData) return [];
+    if (Array.isArray(imageData)) {
+      return imageData.flatMap(item => item?.url_list || item?.url || []);
+    }
+
+    if (Array.isArray(imageData.images)) {
+      return imageData.images.flatMap((item: any) => item?.url_list || item?.url || []);
+    }
+
+    if (Array.isArray(imageData.no_watermark_image_list)) {
+      return imageData.no_watermark_image_list;
+    }
+
+    if (Array.isArray(imageData.no_watermark_image_urls)) {
+      return imageData.no_watermark_image_urls;
+    }
+
+    return [];
+  }
+
+  function parseDuration(aweme: any, fallbackMusic: any) {
+    const videoDuration = aweme?.video?.duration;
+    const rawDuration = aweme?.duration ?? fallbackMusic?.duration ?? 0;
+    if (typeof videoDuration === 'number') {
+      return videoDuration > 1000 ? Math.round(videoDuration / 1000) : videoDuration;
+    }
+    return rawDuration;
+  }
 
   function formatReply(template: string, data: any) {
     let result = template;
@@ -114,31 +158,28 @@ export function apply(ctx: Context, config: Config) {
     try {
       if (logDetail) log('info', `开始请求API获取视频信息`)
       const response = await getVideoDetailMinimal(url);
+      const { code, aweme, payload } = normalizeResponse(response);
 
-      if (response.code !== 200) {
-        log('warn', `解析失败: ${url}, 状态码: ${response.code}`)
+      if (code !== 200 || !aweme) {
+        log('warn', `解析失败: ${url}, 状态码: ${code}`)
         return '解析失败! 该链接或许不支持';
       }
 
-      const {
-        data: {
-          desc,
-          image_data,
-          music,
-          author = {},
-          statistics = {},
-          aweme_id
-        }
-      } = response;
+      const desc = aweme?.desc || payload?.desc || '';
+      const imageList = collectImages(aweme?.images || aweme?.image_data || payload?.image_data);
+      const music = aweme?.music || payload?.music || {};
+      const author = aweme?.author || payload?.author || {};
+      const statistics = aweme?.statistics || payload?.statistics || {};
+      const aweme_id = aweme?.aweme_id || payload?.aweme_id;
 
-      const isTypeImage = image_data && Object.keys(image_data).length > 0;
+      const isTypeImage = imageList.length > 0;
       const contentType = isTypeImage ? '图片' : '视频';
 
       const digg_count = statistics.digg_count || 0;
       const comment_count = statistics.comment_count || 0;
       const share_count = statistics.share_count || 0;
       const collect_count = statistics.collect_count || 0;
-      const duration = music?.duration || 0;
+      const duration = parseDuration(aweme, music);
       const nickname = author?.nickname || '未知作者';
       const signature = author?.signature || '';
 
@@ -169,42 +210,44 @@ export function apply(ctx: Context, config: Config) {
       await session.send(replyText);
 
       if (isTypeImage) {
-        const {
-          no_watermark_image_list
-        } = image_data;
+        if (logDetail) log('info', `开始下载图片, 数量: ${imageList.length}`)
 
-        if (logDetail) log('info', `开始下载图片, 数量: ${no_watermark_image_list.length}`)
-
-        if (no_watermark_image_list.length > 3) {
-          const forwardMessages = await Promise.all(no_watermark_image_list.map(async (item) => {
+        if (imageList.length > 3) {
+          const forwardMessages = await Promise.all(imageList.map(async (item) => {
             return h('img', { src: item })
           }));
           const forwardMessage = h('message', { forward: true, children: forwardMessages });
           await session.send(forwardMessage);
-          if (logInfo) log('success', `已发送${no_watermark_image_list.length}张图片(合并转发)`)
+          if (logInfo) log('success', `已发送${imageList.length}张图片(合并转发)`)
         } else {
-          no_watermark_image_list.forEach(async item => {
+          imageList.forEach(async item => {
             await session.send(h('img', { src: item }))
           });
-          if (logInfo) log('success', `已发送${no_watermark_image_list.length}张图片`)
+          if (logInfo) log('success', `已发送${imageList.length}张图片`)
         }
       } else {
-        const videoDuration = music && music.duration
-        if (videoDuration > config.maxDuration) {
-          const {
-            data: {
-              cover_data: coverData
-            }
-          } = response;
+        const maxDuration = Number(config.maxDuration) || 0;
+        if (maxDuration > 0 && duration > maxDuration) {
+          const coverUrl = aweme?.video?.cover?.url_list?.[0]
+            || aweme?.video?.dynamic_cover?.url_list?.[0]
+            || payload?.cover_data?.dynamic_cover?.url_list?.[0];
 
-          if (logInfo) log('warn', `视频时长(${videoDuration}秒)超过限制(${config.maxDuration}秒), 仅发送预览图`)
+          if (logInfo) log('warn', `视频时长(${duration}秒)超过限制(${config.maxDuration}秒), 仅发送预览图)`)
 
           await session.send(config.longVideoTemplate);
-          await session.send(h('img', { src: coverData?.dynamic_cover?.url_list[0] }))
+          if (coverUrl) {
+            await session.send(h('img', { src: coverUrl }))
+          }
         } else {
-          if (logDetail) log('info', `开始下载视频, 时长: ${videoDuration}秒`)
+          if (logDetail) log('info', `开始下载视频, 时长: ${duration}秒`)
 
-          const videoBuffer = await ctx.http.get<ArrayBuffer>(config.apiHost + '/api/download?url=' + url + '&prefix=true&with_watermark=true', {
+
+          const videoBuffer = await ctx.http.get<ArrayBuffer>(config.apiHost + '/api/download', {
+            params: {
+              url,
+              prefix: true,
+              with_watermark: false
+            },
             responseType: 'arraybuffer',
           });
 
