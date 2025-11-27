@@ -78,12 +78,12 @@ export function apply(ctx: Context, config: Config) {
     logger[level](message, ...args)
   }
 
-  async function getVideoDetailMinimal(url: string) {
+  async function getVideoDetail(url: string) {
     if (logDetail) log('info', `正在获取抖音链接信息: ${url}`)
     return await ctx.http.get(config.apiHost + '/api/hybrid/video_data', {
       params: {
         url,
-        minimal: true
+        minimal: false
       }
     });
   };
@@ -97,22 +97,18 @@ export function apply(ctx: Context, config: Config) {
     return { code: topCode ?? 200, aweme, payload };
   }
 
-  function collectImages(imageData: any): string[] {
-    if (!imageData) return [];
-    if (Array.isArray(imageData)) {
-      return imageData.flatMap(item => item?.url_list || item?.url || []);
-    }
+  function collectImages(aweme: any, payload: any): string[] {
+    const sources = [
+      aweme?.images,
+      aweme?.image_infos,
+      payload?.images,
+      payload?.image_infos,
+    ];
 
-    if (Array.isArray(imageData.images)) {
-      return imageData.images.flatMap((item: any) => item?.url_list || item?.url || []);
-    }
-
-    if (Array.isArray(imageData.no_watermark_image_list)) {
-      return imageData.no_watermark_image_list;
-    }
-
-    if (Array.isArray(imageData.no_watermark_image_urls)) {
-      return imageData.no_watermark_image_urls;
+    for (const source of sources) {
+      if (Array.isArray(source) && source.length) {
+        return source.flatMap((item) => item?.url_list || item?.url || []);
+      }
     }
 
     return [];
@@ -157,7 +153,7 @@ export function apply(ctx: Context, config: Config) {
 
     try {
       if (logDetail) log('info', `开始请求API获取视频信息`)
-      const response = await getVideoDetailMinimal(url);
+      const response = await getVideoDetail(url);
       const { code, aweme, payload } = normalizeResponse(response);
 
       if (code !== 200 || !aweme) {
@@ -166,7 +162,7 @@ export function apply(ctx: Context, config: Config) {
       }
 
       const desc = aweme?.desc || payload?.desc || '';
-      const imageList = collectImages(aweme?.images || aweme?.image_data || payload?.image_data);
+      const imageList = collectImages(aweme, payload);
       const music = aweme?.music || payload?.music || {};
       const author = aweme?.author || payload?.author || {};
       const statistics = aweme?.statistics || payload?.statistics || {};
@@ -228,9 +224,11 @@ export function apply(ctx: Context, config: Config) {
       } else {
         const maxDuration = Number(config.maxDuration) || 0;
         if (maxDuration > 0 && duration > maxDuration) {
-          const coverUrl = aweme?.video?.cover?.url_list?.[0]
-            || aweme?.video?.dynamic_cover?.url_list?.[0]
-            || payload?.cover_data?.dynamic_cover?.url_list?.[0];
+          const coverUrl = aweme?.video?.dynamic_cover?.url_list?.[0]
+            || aweme?.video?.cover?.url_list?.[0]
+            || aweme?.video?.cover_original_scale?.url_list?.[0]
+            || payload?.dynamic_cover?.url_list?.[0]
+            || payload?.cover?.url_list?.[0];
 
           if (logInfo) log('warn', `视频时长(${duration}秒)超过限制(${config.maxDuration}秒), 仅发送预览图)`)
 
@@ -242,12 +240,15 @@ export function apply(ctx: Context, config: Config) {
           if (logDetail) log('info', `开始下载视频, 时长: ${duration}秒`)
 
 
-          const videoBuffer = await ctx.http.get<ArrayBuffer>(config.apiHost + '/api/download', {
-            params: {
-              url,
-              prefix: true,
-              with_watermark: false
-            },
+          const videoUrl = aweme?.video?.download_addr?.url_list?.[0]
+            || aweme?.video?.play_addr?.url_list?.[0];
+
+          if (!videoUrl) {
+            log('error', `未找到视频下载地址: ${url}`);
+            return '无法获取视频链接，请稍后重试';
+          }
+
+          const videoBuffer = await ctx.http.get<ArrayBuffer>(videoUrl, {
             responseType: 'arraybuffer',
           });
 
