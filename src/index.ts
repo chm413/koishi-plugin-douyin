@@ -142,10 +142,11 @@ export function apply(ctx: Context, config: Config) {
   }
 
   ctx.middleware(async (session, next) => {
-    if (!session.content.includes('douyin.com')) return next()
+    const content = session.content || ''
+    if (!content.includes('douyin.com')) return next()
 
     const urlRegex = /(https?:\/\/[^\s]+)/g;
-    const urlMatch = session.content.match(urlRegex);
+    const urlMatch = content.match(urlRegex);
     if (!urlMatch || !urlMatch[0]) return next();
 
     const url = urlMatch[0];
@@ -209,12 +210,10 @@ export function apply(ctx: Context, config: Config) {
         if (logDetail) log('info', `开始下载图片, 数量: ${imageList.length}`)
 
         if (imageList.length > 3) {
-          const forwardMessages = await Promise.all(imageList.map(async (item) => {
-            return h('img', { src: item })
-          }));
-          const forwardMessage = h('message', { forward: true, children: forwardMessages });
-          await session.send(forwardMessage);
-          if (logInfo) log('success', `已发送${imageList.length}张图片(合并转发)`)
+          for (const item of imageList) {
+            await session.send(h('img', { src: item }))
+          }
+          if (logInfo) log('success', `已发送${imageList.length}张图片`)
         } else {
           imageList.forEach(async item => {
             await session.send(h('img', { src: item }))
@@ -248,8 +247,6 @@ export function apply(ctx: Context, config: Config) {
           if (logDetail) log('info', `准备发送视频直链, 时长: ${duration}秒`)
 
           await session.send('视频地址：' + videoUrl)
-          await session.send(h.video(videoUrl, 'video/mp4'))
-
           if (logInfo) log('success', `已发送视频直链`)
         }
       }
