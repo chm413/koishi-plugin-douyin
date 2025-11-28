@@ -88,6 +88,33 @@ export function apply(ctx: Context, config: Config) {
     });
   };
 
+  function logSessionDebug(session: any, content: string) {
+    if (!logDetail) return
+    log('info', `会话调试信息:`, {
+      platform: session.platform,
+      channelId: session.channelId,
+      userId: session.userId,
+      guildId: session.guildId,
+      hasContent: Boolean(content),
+    })
+  }
+
+  function logAwemeDebug(aweme: any, payload: any) {
+    if (!logDetail) return
+    const video = aweme?.video || payload?.video || {}
+    log('info', 'aweme调试数据:', {
+      aweme_id: aweme?.aweme_id || payload?.aweme_id,
+      desc: aweme?.desc,
+      hasVideo: Boolean(video?.download_addr || video?.play_addr),
+      imageCount: collectImages(aweme, payload).length,
+      coverSources: {
+        dynamic: video?.dynamic_cover?.url_list?.length,
+        cover: video?.cover?.url_list?.length,
+        original: video?.cover_original_scale?.url_list?.length,
+      },
+    })
+  }
+
   function normalizeResponse(response: any) {
     const topCode = response?.code ?? response?.status ?? response?.status_code;
     const topData = response?.data ?? {};
@@ -143,6 +170,7 @@ export function apply(ctx: Context, config: Config) {
 
   ctx.middleware(async (session, next) => {
     const content = session.content || ''
+    logSessionDebug(session, content)
     if (!content.includes('douyin.com')) return next()
 
     const urlRegex = /(https?:\/\/[^\s]+)/g;
@@ -156,6 +184,8 @@ export function apply(ctx: Context, config: Config) {
       if (logDetail) log('info', `开始请求API获取视频信息`)
       const response = await getVideoDetail(url);
       const { code, aweme, payload } = normalizeResponse(response);
+
+      logAwemeDebug(aweme, payload)
 
       if (code !== 200 || !aweme) {
         log('warn', `解析失败: ${url}, 状态码: ${code}`)
@@ -256,7 +286,11 @@ export function apply(ctx: Context, config: Config) {
               || aweme?.video?.play_addr?.url_list?.[0];
 
             if (!videoUrl) {
-              log('error', `未找到视频下载地址: ${url}`);
+              log('error', `未找到视频下载地址: ${url}`, {
+                hasDownloadAddr: Boolean(aweme?.video?.download_addr),
+                hasPlayAddr: Boolean(aweme?.video?.play_addr),
+                rawVideoKeys: Object.keys(aweme?.video || {}),
+              });
               return '无法获取视频链接，请稍后重试';
             }
 
