@@ -192,64 +192,80 @@ export function apply(ctx: Context, config: Config) {
         log('success', `解析成功: ${contentType}, 作者: ${nickname}, 时长: ${duration}秒`)
       }
 
-      const replyText = formatReply(config.replyTemplate, {
-        desc,
-        type: contentType,
-        digg_count,
-        comment_count,
-        share_count,
-        collect_count,
-        duration,
-        nickname,
-        signature
-      });
+        const replyText = formatReply(config.replyTemplate, {
+          desc,
+          type: contentType,
+          digg_count,
+          comment_count,
+          share_count,
+          collect_count,
+          duration,
+          nickname,
+          signature
+        });
 
-      await session.send(replyText);
-
-      if (isTypeImage) {
-        if (logDetail) log('info', `开始下载图片, 数量: ${imageList.length}`)
-
-        if (imageList.length > 3) {
-          for (const item of imageList) {
-            await session.send(h('img', { src: item }))
+        const safeSend = async (content: any) => {
+          try {
+            await session.send(content)
+            return true
+          } catch (sendErr) {
+            log('warn', '发送消息失败，尝试使用备用通道', sendErr as any)
+            try {
+              await session.bot?.sendMessage(session.channelId, content)
+              return true
+            } catch (botErr) {
+              log('error', '备用发送通道也失败', botErr as any)
+              return false
+            }
           }
-          if (logInfo) log('success', `已发送${imageList.length}张图片`)
-        } else {
-          imageList.forEach(async item => {
-            await session.send(h('img', { src: item }))
-          });
-          if (logInfo) log('success', `已发送${imageList.length}张图片`)
         }
-      } else {
-        const maxDuration = Number(config.maxDuration) || 0;
-        if (maxDuration > 0 && duration > maxDuration) {
-          const coverUrl = aweme?.video?.dynamic_cover?.url_list?.[0]
-            || aweme?.video?.cover?.url_list?.[0]
-            || aweme?.video?.cover_original_scale?.url_list?.[0]
-            || payload?.dynamic_cover?.url_list?.[0]
-            || payload?.cover?.url_list?.[0];
 
-          if (logInfo) log('warn', `视频时长(${duration}秒)超过限制(${config.maxDuration}秒), 仅发送预览图)`)
+        await safeSend(replyText);
 
-          await session.send(config.longVideoTemplate);
-          if (coverUrl) {
-            await session.send(h('img', { src: coverUrl }))
+        if (isTypeImage) {
+          if (logDetail) log('info', `开始下载图片, 数量: ${imageList.length}`)
+
+          if (imageList.length > 3) {
+            for (const item of imageList) {
+              await safeSend(h('img', { src: item }))
+            }
+            if (logInfo) log('success', `已发送${imageList.length}张图片`)
+          } else {
+            for (const item of imageList) {
+              await safeSend(h('img', { src: item }))
+            }
+            if (logInfo) log('success', `已发送${imageList.length}张图片`)
           }
         } else {
-          const videoUrl = aweme?.video?.download_addr?.url_list?.[0]
-            || aweme?.video?.play_addr?.url_list?.[0];
+          const maxDuration = Number(config.maxDuration) || 0;
+          if (maxDuration > 0 && duration > maxDuration) {
+            const coverUrl = aweme?.video?.dynamic_cover?.url_list?.[0]
+              || aweme?.video?.cover?.url_list?.[0]
+              || aweme?.video?.cover_original_scale?.url_list?.[0]
+              || payload?.dynamic_cover?.url_list?.[0]
+              || payload?.cover?.url_list?.[0];
 
-          if (!videoUrl) {
-            log('error', `未找到视频下载地址: ${url}`);
-            return '无法获取视频链接，请稍后重试';
+            if (logInfo) log('warn', `视频时长(${duration}秒)超过限制(${config.maxDuration}秒), 仅发送预览图)`)
+
+            await safeSend(config.longVideoTemplate);
+            if (coverUrl) {
+              await safeSend(h('img', { src: coverUrl }))
+            }
+          } else {
+            const videoUrl = aweme?.video?.download_addr?.url_list?.[0]
+              || aweme?.video?.play_addr?.url_list?.[0];
+
+            if (!videoUrl) {
+              log('error', `未找到视频下载地址: ${url}`);
+              return '无法获取视频链接，请稍后重试';
+            }
+
+            if (logDetail) log('info', `准备发送视频直链, 时长: ${duration}秒`)
+
+            await safeSend('视频地址：' + videoUrl)
+            if (logInfo) log('success', `已发送视频直链`)
           }
-
-          if (logDetail) log('info', `准备发送视频直链, 时长: ${duration}秒`)
-
-          await session.send('视频地址：' + videoUrl)
-          if (logInfo) log('success', `已发送视频直链`)
         }
-      }
     } catch(err) {
       log('error', `解析抖音链接出错: ${url}`, err)
       console.log(err);
